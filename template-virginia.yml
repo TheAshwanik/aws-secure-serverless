@@ -1,0 +1,37 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  The stats script - Virginia
+
+Resources:
+  WebACLWithTorBlock:
+    Type: AWS::WAFv2::WebACL
+    Properties:
+      Name: WebACLWithTorBlock
+      Scope: CLOUDFRONT
+      DefaultAction:
+        Allow: {}
+      VisibilityConfig:
+        SampledRequestsEnabled: true
+        CloudWatchMetricsEnabled: true
+        MetricName: MetricForWebACLWithTorBlock
+      Rules:
+        - Name: AWS-AWSManagedRulesAnonymousIpList
+          Priority: 0
+          OverrideAction:
+            None: {}
+          VisibilityConfig:
+            SampledRequestsEnabled: true
+            CloudWatchMetricsEnabled: true
+            MetricName: MetricForWebACLWithManagedIPReputation
+          Statement:
+            ManagedRuleGroupStatement:
+              VendorName: AWS
+              Name: AWSManagedRulesAnonymousIpList
+
+Outputs:
+  WebACLArn:
+    Description: The Arn of WAF Rule
+    Value: !GetAtt WebACLWithTorBlock.Arn
+    Export:
+      Name: WebACLArn

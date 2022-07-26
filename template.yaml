@@ -1,0 +1,175 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  The stats script
+
+  Sample SAM Template for stats scripts
+
+Parameters:
+  DBName:
+    Default: stats
+    Type: String
+  WebACLArn:
+    Default: ARN
+    Type: String
+
+Globals:
+  Function:
+    Timeout: 5
+    MemorySize: 128
+
+Resources:
+  AuthFunc:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: authorizer/
+      Handler: auth.lambda_handler
+      Runtime: python3.8
+      Environment:
+          Variables:
+            JWT: !Sub '{{resolve:secretsmanager:${JWTSecret}::token}}'
+  ApiGW:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: Prod
+      Auth:
+        DefaultAuthorizer: null
+        Authorizers:
+          AuthFunc:
+            FunctionArn: !GetAtt AuthFunc.Arn
+            FunctionPayloadType: REQUEST
+            Identity:
+              Headers:
+                - jwt
+              ReauthorizeEvery: 0
+      Cors:
+        AllowMethods: "'*'"
+        AllowHeaders: "'*'"
+        AllowOrigin: "'*'"
+  StatsWriter:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: writer/
+      Handler: writer.lambda_handler
+      Runtime: python3.8
+      Policies:
+      - Statement:
+        - Effect: Allow
+          Action:
+          - dynamodb:PutItem
+          Resource: !GetAtt DynamoDBTable.Arn
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref DBName
+      Events:
+        HttpPost:
+          Type: Api
+          Properties:
+            Path: '/log'
+            Method: POST
+            RestApiId: !Ref ApiGW
+            Auth:
+              Authorizer: AuthFunc
+  StatsReader:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: reader/
+      Handler: reader.lambda_handler
+      Runtime: python3.8
+      Policies:
+      - Statement:
+        - Effect: Allow
+          Action:
+          - dynamodb:Query
+          - dynamodb:Scan
+          - dynamodb:GetItem
+          Resource: !GetAtt DynamoDBTable.Arn
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref DBName
+      Events:
+        HttpPost:
+          Type: Api
+          Properties:
+            Path: '/stats'
+            Method: GET
+            RestApiId: !Ref ApiGW
+            Auth:
+              Authorizer: AuthFunc
+  CloudfrontDistribution:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        PriceClass: PriceClass_100 #Use only North America and Europe
+        WebACLId: !Ref WebACLArn
+        IPV6Enabled: false
+        HttpVersion: http2 
+        Origins:
+          - Id: MyOrigin
+            DomainName: !Sub "${ApiGW}.execute-api.${AWS::Region}.amazonaws.com"
+            OriginPath: /Prod
+            CustomOriginConfig:
+              HTTPSPort: 443
+              OriginProtocolPolicy: https-only
+              OriginSSLProtocols: 
+                - TLSv1.2
+            OriginCustomHeaders:
+              - HeaderName: jwt
+                HeaderValue: !Sub '{{resolve:secretsmanager:${JWTSecret}::token}}'
+        Enabled: true
+        DefaultCacheBehavior:
+          AllowedMethods:
+            - GET
+            - POST
+            - HEAD
+            - DELETE
+            - OPTIONS
+            - PUT
+            - PATCH
+          Compress: true
+          TargetOriginId: MyOrigin
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad #Managed cache policy - CachingDisabled
+  JWTSecret:
+      Type: 'AWS::SecretsManager::Secret'
+      Properties:
+        GenerateSecretString:
+          SecretStringTemplate: '{"header": "jwt"}'
+          GenerateStringKey: token
+          PasswordLength: 32
+  DynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: timestamp
+          AttributeType: S
+        - AttributeName: type
+          AttributeType: S
+        - AttributeName: payload
+          AttributeType: S
+      KeySchema:
+        - AttributeName: timestamp
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: typeAndPayload
+          KeySchema:
+            - AttributeName: type
+              KeyType: HASH
+            - AttributeName: payload
+              KeyType: RANGE
+          Projection:
+            ProjectionType: ALL
+          ProvisionedThroughput:
+            ReadCapacityUnits: 1
+            WriteCapacityUnits: 1
+      ProvisionedThroughput:
+        ReadCapacityUnits: 1
+        WriteCapacityUnits: 1
+      TableName: !Ref DBName
+
+Outputs:
+  WebACLRule:
+    Description: The URL to application
+    Value: !GetAtt CloudfrontDistribution.DomainName
+    Export:
+      Name: URL
